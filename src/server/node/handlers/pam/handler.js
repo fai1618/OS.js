@@ -32,121 +32,55 @@
  */
 
 //
-// See doc/pam-handler.txt
+// See doc/handler-pam.txt
 //
 
-(function(qs, pam, userid, fs, path) {
+(function(_pam, _userid) {
   'use strict';
-
-  function getRootPath(username) {
-    return path.join('/home', username, '.osjs');
-  }
-
-  function getSettingsPath(username) {
-    return path.join(getRootPath(username), 'settings.json');
-  }
-
-  function getGroupsPath() {
-    return path.join('/etc', 'osjs', 'groups.json');
-  }
-
-  function authenticate(login, callback) {
-
-    function getUserGroups(cb) {
-      fs.readFile(getGroupsPath(), function(err, gdata) {
-        var list = {};
-        if ( !err ) {
-          try {
-            list = JSON.parse(gdata.toString());
-          } catch ( e ) {}
-        }
-
-        cb(list[login.username] || []);
-      });
-    }
-
-    function getUserSettings(cb) {
-      fs.readFile(getSettingsPath(login.username), function(err, sdata) {
-        var settings = {};
-        if ( !err && sdata ) {
-          try {
-            settings = JSON.parse(sdata.toString());
-          } catch ( e ) {}
-        }
-        cb(settings);
-      });
-    }
-
-    pam.authenticate(login.username, login.password, function(err) {
-      if ( err ) {
-        callback(err);
-      } else {
-        getUserSettings(function(settings) {
-          getUserGroups(function(groups) {
-            callback(false, {
-              id: userid.uid(login.username),
-              groups: groups,
-              name: login.username
-            }, settings);
-          });
-        });
-      }
-    });
-  }
 
   /////////////////////////////////////////////////////////////////////////////
   // EXPORTS
   /////////////////////////////////////////////////////////////////////////////
 
-  // Attach API functions
-  exports.register = function(CONFIG, API, HANDLER) {
-    API.login = function(login, callback, request, response, body) {
-      authenticate(login, function(err, data, settings) {
-        if ( err ) {
-          callback(err);
-          return;
+  /**
+   * @api handler.PAMHandler
+   * @see handler.Handler
+   * @class
+   */
+  exports.register = function(instance, DefaultHandler) {
+    function PAMHandler() {
+      DefaultHandler.call(this, instance, {
+        login: function(login, callback, request, response, config, handler) {
+          var cfg = config.handlers.pam;
+          _pam.authenticate(login.username, login.password, function(err) {
+            if ( err ) {
+              callback(err);
+            } else {
+              handler.onSystemLogin(request, response, cfg, login, function(cb) {
+                cb(_userid.uid(login.username));
+              }, callback);
+            }
+          });
+        },
+
+        logout: function(args, callback, request, response, config, handler) {
+          handler.onLogout(request, response, callback);
+        },
+
+        settings: function(args, callback, request, response, config, handler) {
+          var cfg = config.handlers.pam;
+          handler.onSystemSettings(request, response, cfg, args.settings, callback);
         }
-
-        request.cookies.set('username', login.username, {httpOnly:true});
-        request.cookies.set('groups', JSON.stringify(data.groups), {httpOnly:true});
-
-        callback(false, {
-          userData : {
-            id:       data.id,
-            username: login.username,
-            name:     data.name,
-            groups:   data.groups
-          },
-          userSettings: settings
-        });
-
       });
-    };
+    }
 
-    API.logout = function(args, callback, request, response) {
-      request.cookies.set('username', null, {httpOnly:true});
-      request.cookies.set('groups', null, {httpOnly:true});
-      callback(false, true);
-    };
+    PAMHandler.prototype = Object.create(DefaultHandler.prototype);
+    PAMHandler.constructor = DefaultHandler;
 
-    API.settings = function(args, callback, request, response) {
-      var settings = args.settings;
-      var uname = request.cookies.get('username');
-      var data = JSON.stringify(settings);
-
-      // Make sure directory exists before writing
-      fs.mkdir(getRootPath(uname), function() {
-        fs.writeFile(getSettingsPath(uname), data,  function(err) {
-          callback(err || false, !!err);
-        });
-      });
-    };
+    return new PAMHandler();
   };
 
 })(
-  require('querystring'),
   require('authenticate-pam'),
-  require('userid'),
-  require('fs'),
-  require('path')
+  require('userid')
 );

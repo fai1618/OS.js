@@ -62,6 +62,7 @@
     conf:         _path.join(ROOT, 'src', 'conf'),
     server:       _path.join(ROOT, 'src', 'server'),
     server_node:  _path.join(ROOT, 'src', 'server', 'node'),
+    server_php:   _path.join(ROOT, 'src', 'server', 'php'),
     templates:    _path.join(ROOT, 'src', 'templates'),
     javascript:   _path.join(ROOT, 'src', 'client', 'javascript'),
     stylesheets:  _path.join(ROOT, 'src', 'client', 'stylesheets'),
@@ -78,6 +79,7 @@
      */
     out_custom_config:        _path.join(ROOT, 'src', 'conf', '900-custom.json'),
     out_server_config:        _path.join(ROOT, 'src', 'server', 'settings.json'),
+    out_server_manifest:      _path.join(ROOT, 'src', 'server', 'packages.json'),
     out_client_js:            _path.join(ROOT, 'dist', 'osjs.js'),
     out_client_css:           _path.join(ROOT, 'dist', 'osjs.css'),
     out_client_dialogs:       _path.join(ROOT, 'dist', 'dialogs.html'),
@@ -181,6 +183,14 @@
    */
   function error(e) {
     console.log('!!!', e);
+  }
+
+  /**
+   * Wrapper for warning message
+   */
+  function warning(grunt, str) {
+    str = 'WARN: ' + str;
+    grunt.log.writeln(str['yellow'].bold);
   }
 
   /**
@@ -311,7 +321,7 @@
         return false;
       } else if ( value === 'null' ) {
         return null;
-      } else if ( value.match(/^\d+$/) ) {
+      } else if ( value.match(/^\d+$/) && !String(value).match(/^0/) ) {
         return parseInt(value, 10);
       } else if ( value.match(/^\d{0,2}(\.\d{0,2}){0,1}$/) ) {
         return parseFloat(value);
@@ -392,40 +402,37 @@
    * Enable/Disable given package
    */
   function togglePackage(grunt, packageName, enable) {
-    var packages = readPackageMetadata(grunt, PATHS.packages, true);
-    var found;
+    var currentEnabled = getConfigPath(grunt, 'packages.ForceEnable') || [];
+    var currentDisabled = getConfigPath(grunt, 'packages.ForceDisable') || [];
 
-    Object.keys(packages).forEach(function(iter) {
-      if ( packageName.match(/\//) ) {
-        if ( packageName === iter ) {
-          found = packages[iter];
-        }
-      } else {
-        if ( iter.split('/')[1] === packageName ) {
-          found = packages[iter];
-        }
+    var idx;
+    if ( enable ) {
+      if ( currentEnabled.indexOf(packageName) < 0 ) {
+        currentEnabled.push(packageName);
       }
-      return !!found;
-    });
 
-    if ( found ) {
-      var src = _path.join(PATHS.packages, found.path, 'package.json');
-      if ( _fs.existsSync(src) ) {
-        console.log(enable ? 'Enabling' : 'Disabling', 'package', found.path);
+      idx = currentDisabled.indexOf(packageName);
+      if ( idx >= 0 ) {
+        currentDisabled.splice(idx, 1);
+      }
+    } else {
+      idx = currentEnabled.indexOf(packageName);
+      if ( idx >= 0 ) {
+        currentEnabled.splice(idx, 1);
+      }
 
-        var jsn = JSON.parse(_fs.readFileSync(src));
-        jsn.enabled = enable ? null : false;
-        removeNulls(jsn);
-
-        _fs.writeFileSync(src, JSON.stringify(jsn, null, 2));
-
-        return;
+      idx = currentDisabled.indexOf(packageName);
+      if ( idx < 0 ) {
+        currentDisabled.push(packageName);
       }
     }
 
-    grunt.fail.fatal('Package ' + packageName + ' not found!');
-
-    console.log(found);
+    setConfigPath(grunt, 'packages', {
+      packages: {
+        ForceEnable: currentEnabled,
+        ForceDisable: currentDisabled
+      }
+    }, true);
   }
 
   /**
@@ -474,21 +481,16 @@
       ignores = ignores || [];
 
       var config = {};
+
+      // src/conf files
       var files = getConfigFiles(PATHS.conf);
       files.forEach(function(iter) {
         if ( ignores.indexOf(_path.basename(iter)) >= 0 ) {
           return;
         }
-
-        try {
-          var json = JSON.parse(_fs.readFileSync(iter));
-          var tjson = JSON.parse(JSON.stringify(config));
-          config = mergeObject(tjson, json);
-        } catch ( e ) {
-          console.log(e.stack);
-          grunt.fail.fatal('WARNING: Failed to parse ' + iter.replace(ROOT, ''));
-        }
+        config = readAndMerge(grunt, iter, config);
       });
+
       return JSON.parse(JSON.stringify(config));
     }
 
@@ -555,13 +557,25 @@
     PackageException.prototype = Object.create(Error.prototype);
     PackageException.constructor = Error;
 
-    function check(json, all) {
+    function check(grunt, json, all, pn) {
       if ( !json || !Object.keys(json).length ) {
         throw new PackageException('Package manifest is empty');
       }
-      if ( !all && json.enabled === false || json.enabled === 'false' ) {
-        throw new PackageException('Package is disabled');
+      var currentEnabled = getConfigPath(grunt, 'packages.ForceEnable') || [];
+      var currentDisabled = getConfigPath(grunt, 'packages.ForceDisable') || [];
+
+      if ( !all ) {
+        if ( String(json.enabled) === 'false' ) {
+          if ( currentEnabled.indexOf(pn) < 0 ) {
+            throw new PackageException('Package is disabled');
+          }
+        } else {
+          if ( currentDisabled.indexOf(pn) >= 0 ) {
+            throw new PackageException('Package is disabled (by user config)');
+          }
+        }
       }
+
       if ( !json.className ) {
         throw new PackageException('Package is missing className');
       }
@@ -576,7 +590,7 @@
         var dir = _path.join(srcDir || PATHS.packages, r);
         getDirectories(dir).forEach(function(p) {
           var pdir = _path.join(dir, p);
-          var mpath = _path.join(pdir, 'package.json');
+          var mpath = _path.join(pdir, 'metadata.json');
 
           if ( _fs.existsSync(mpath) ) {
             var raw = _fs.readFileSync(mpath);
@@ -584,7 +598,7 @@
             try {
               var json = JSON.parse(raw);
 
-              if ( check(json, all) ) {
+              if ( check(grunt, json, all, p) ) {
                 list[name] = json;
               }
 
@@ -709,6 +723,20 @@
     return result;
   }
 
+  function readAndMerge(grunt, iter, config) {
+    console.log('+++', iter);
+    try {
+      if ( _fs.existsSync(iter) ) {
+        var json = JSON.parse(_fs.readFileSync(iter));
+        config = mergeObject(clone(config), json);
+      }
+    } catch ( e ) {
+      console.log(e.stack);
+      grunt.fail.fatal('WARNING: Failed to parse ' + iter.replace(ROOT, ''));
+    }
+    return config;
+  }
+
   /////////////////////////////////////////////////////////////////////////////
   // CONFIGS
   /////////////////////////////////////////////////////////////////////////////
@@ -716,15 +744,8 @@
   function getClientConfig(grunt, dist) {
     var cfg = generateBuildConfig(grunt);
     var settings = clone(cfg.client);
-    var themes = readThemeMetadata(grunt);
-    var extensions = getCoreExtensions(grunt);
-    var mime = cfg.mime;
-
+    var autostart = settings.AutoStart;
     var preloads = [];
-    var styles = themes.styles;
-    var sounds = {};
-    var icons = {};
-    var fonts = themes.fonts;
 
     if ( dist === 'dist-dev' ) {
       preloads.push({
@@ -739,6 +760,12 @@
       });
     }
 
+    var themes = readThemeMetadata(grunt);
+    var styles = themes.styles;
+    var sounds = {};
+    var icons = {};
+    var fonts = themes.fonts;
+
     themes.sounds.forEach(function(t) {
       sounds[t.name] = t.title;
     });
@@ -747,15 +774,11 @@
       icons[t.name] = t.title;
     });
 
-    Object.keys(extensions).forEach(function(p) {
-      var e = extensions[p];
-      if ( e.sources ) {
-        e.sources.forEach(function(ee) {
-          preloads.push({
-            type: ee.type,
-            src: _path.join('/', 'packages', p, ee.src)
-          });
-        });
+    var packages = readPackageMetadata();
+    Object.keys(packages).forEach(function(n) {
+      var meta = packages[n];
+      if ( meta.autostart === true ) {
+        autostart.push(n.split('/')[1]);
       }
     });
 
@@ -763,9 +786,10 @@
     settings.Icons = icons;
     settings.Sounds = sounds;
     settings.Fonts.list = fonts.concat(settings.Fonts.list);
-    settings.MIME = mime;
+    settings.MIME = cfg.mime;
     settings.Preloads = preloads;
     settings.Connection.Dist = dist;
+    settings.AutoStart = autostart;
 
     return settings;
   }
@@ -783,27 +807,41 @@
       (['api.php', 'api.js']).forEach(function(c) {
         var dir = _path.join(PATHS.packages, e, c);
         if ( _fs.existsSync(dir) ) {
-          var path = fixWinPath(dir).replace(fixWinPath(ROOT), '');
+          var path = '/' + fixWinPath(dir).replace(fixWinPath(PATHS.src), cfg.server.srcdir);
           loadExtensions.push(path);
         }
       });
+
+      if ( extensions[e].conf && extensions[e].conf instanceof Array ) {
+        extensions[e].conf.forEach(function(c) {
+          try {
+            var p = _path.join(PATHS.packages, extensions[e].path, c);
+            cfg = readAndMerge(grunt, p, cfg);
+          } catch ( e ) {
+            console.warn('createConfigurationFiles()', e, e.stack);
+          }
+        });
+      }
     });
 
     function buildServer() {
       var jsonSettings = clone(cfg.server);
       jsonSettings.extensions = loadExtensions;
       jsonSettings.mimes = cfg.mime.mapping;
-      jsonSettings.uri = {
-        api: cfg.client.Connection.APIURI,
-        fs: cfg.client.Connection.FSURI
-      };
 
       try {
         jsonSettings.vfs.maxuploadsize = cfg.client.VFS.MaxUploadSize;
       } catch ( e ) {}
 
-      Object.keys(jsonSettings.vfs).forEach(function(key) {
-        jsonSettings.vfs[key] = fixWinPath(jsonSettings.vfs[key]);
+      jsonSettings.vfs.homes = fixWinPath(jsonSettings.vfs.homes);
+      Object.keys(jsonSettings.vfs.mounts).forEach(function(key) {
+        jsonSettings.vfs.mounts[key] = fixWinPath(jsonSettings.vfs.mounts[key]);
+      });
+
+      Object.keys(cfg.server).forEach(function(k) {
+        if ( typeof jsonSettings[k] === 'undefined' ) {
+          jsonSettings[k] = cfg.server[k];
+        }
       });
 
       // Write
@@ -913,11 +951,18 @@
    */
   function createApacheHtaccess(grunt, dist, outfile) {
     var mimes = [];
-    var mime = generateBuildConfig(grunt).mime;
+    var cfg = generateBuildConfig(grunt);
+    var proxies = [];
 
-    Object.keys(mime.mapping).forEach(function(i) {
+    Object.keys(cfg.mime.mapping).forEach(function(i) {
       if ( i.match(/^\./) ) {
-        mimes.push('  AddType ' + mime.mapping[i] + ' ' + i);
+        mimes.push('  AddType ' + cfg.mime.mapping[i] + ' ' + i);
+      }
+    });
+
+    Object.keys(cfg.server.proxies).forEach(function(k) {
+      if ( k.substr(0, 1) !== '/' && typeof cfg.server.proxies[k] === 'string' ) {
+        proxies.push('     RewriteRule ' + k + ' ' + cfg.server.proxies[k] + ' [P]');
       }
     });
 
@@ -926,6 +971,7 @@
       var dst = _path.join(ROOT, d, '.htaccess');
       var tpl = _fs.readFileSync(src).toString();
       tpl = tpl.replace(/%MIMES%/, mimes.join('\n'));
+      tpl = tpl.replace(/%PROXIES%/, proxies.join('\n'));
       writeFile(dst, tpl);
     }
 
@@ -986,23 +1032,23 @@
     var typemap = {
       iframe: {
         src: 'iframe-application',
-        cpy: ['main.js', 'package.json']
+        cpy: ['main.js', 'metadata.json']
       },
       dummy: {
         src: 'dummy',
-        cpy: ['main.js', 'package.json']
+        cpy: ['main.js', 'metadata.json']
       },
       application: {
         src: 'application',
-        cpy: ['main.js', 'main.css', 'package.json', 'scheme.html']
+        cpy: ['api.js', 'main.js', 'main.css', 'metadata.json', 'scheme.html']
       },
       service: {
         src: 'service',
-        cpy: ['main.js', 'package.json']
+        cpy: ['api.js', 'main.js', 'metadata.json']
       },
       extension: {
         src: 'extension',
-        cpy: ['extension.js', 'package.json']
+        cpy: ['api.js', 'extension.js', 'metadata.json']
       }
     };
 
@@ -1018,7 +1064,8 @@
     }
 
     if ( _fs.existsSync(dst) ) {
-      throw new Error('Template already exists');
+      warning(grunt, 'The package ' + name + ' already exists in repository ' + repo);
+      throw new Error('Package already exists');
     }
 
     function rep(file) {
@@ -1032,6 +1079,41 @@
     typemap[type].cpy.forEach(function(c) {
       rep(_path.join(dst, c));
     });
+
+    var cfg = generateBuildConfig(grunt);
+    if ( (cfg.repositories || []).indexOf(repo) < 0 ) {
+      warning(grunt, 'The repository \'' + repo + '\' is not active.');
+      warning(grunt, 'Activate with `grunt config:add-repository' + repo);
+    }
+  }
+
+  function createHandler(grunt, name) {
+    var uname = name.replace(/[^A-z]/g, '').toLowerCase();
+
+    function createHandlerFile(src, dst) {
+      var tpl = readFile(src).toString();
+      tpl = replaceAll(tpl, 'EXAMPLE', name);
+      writeFile(dst, tpl);
+    }
+
+    mkdir(_path.join(PATHS.javascript, 'handlers', uname));
+    mkdir(_path.join(PATHS.server_php, 'handlers', uname));
+    mkdir(_path.join(PATHS.server_node, 'handlers', uname));
+
+    createHandlerFile(
+      _path.join(PATHS.templates, 'handler', 'client.js'),
+      _path.join(PATHS.javascript, 'handlers', uname, 'handler.js')
+    );
+
+    createHandlerFile(
+      _path.join(PATHS.templates, 'handler', 'php.php'),
+      _path.join(PATHS.server_php, 'handlers', uname, 'handler.php')
+    );
+
+    createHandlerFile(
+      _path.join(PATHS.templates, 'handler', 'node.js'),
+      _path.join(PATHS.server_node, 'handlers', uname, 'handler.js')
+    );
   }
 
   /////////////////////////////////////////////////////////////////////////////
@@ -1116,13 +1198,12 @@
       copyFile(src, dst);
     });
 
-    var splashFile = _path.join(tpldir, 'splash.png');
-    if ( _fs.existsSync(splashFile) ) {
-      copyFile(splashFile, _path.join(outdir, 'splash.png'));
-    }
-
-    copyFile(_path.join(tpldir, 'favicon.png'), _path.join(outdir, 'favicon.png'));
-    copyFile(_path.join(tpldir, 'favicon.ico'), _path.join(outdir, 'favicon.ico'));
+    var ignore = ['index.html'];
+    _fs.readdirSync(tpldir).forEach(function(iter) {
+      if ( ignore.indexOf(iter) < 0 ) {
+        copyFile(_path.join(tpldir, iter), _path.join(outdir, iter));
+      }
+    });
 
     createIndex(grunt, null, dist);
   }
@@ -1189,6 +1270,10 @@
         _path.join(PATHS.templates, 'nw', 'package.json'),
         _path.join(PATHS.out_standalone, 'package.json')
       );
+      copyFile(
+        _path.join(PATHS.server, 'packages.json'),
+        _path.join(PATHS.out_standalone, 'packages.json')
+      );
 
       // Install dependencies
       copyFile(
@@ -1247,14 +1332,13 @@
       var remove = [];
 
       (iter.preload || []).forEach(function(p) {
-        var path = _path.join(src, p.src);
-
-        if ( p.combine === false ) {
+        if ( p.combine === false || p.src.match(/^(ftp|https?\:)?\/\//) ) {
           pre.push(p);
           return;
         }
 
         try {
+          var path = _path.join(src, p.src);
           if ( p.type === 'javascript' ) {
             combined.js.push(readFile(path).toString());
           } else if ( p.type === 'stylesheet' ) {
@@ -1281,7 +1365,7 @@
 
       writeFile(_path.join(dst, 'combined.js'), combined.js.join('\n'));
       writeFile(_path.join(dst, 'combined.css'), combined.css.join('\n'));
-      writeFile(_path.join(dst, 'package.json'), JSON.stringify(iter, null, 2));
+      writeFile(_path.join(dst, 'metadata.json'), JSON.stringify(iter, null, 2));
 
       remove.forEach(function(r) {
         deleteFile(r);
@@ -1328,6 +1412,9 @@
         var path = _path.join(PATHS.fonts, i, 'style.css');
         var rout = readFile(path).toString();
         var rep = cfg.client.Connection.FontURI;
+        if ( !rep.match(/^\//) ) { // Fix for relative paths (CSS)
+          rep = rep.replace(/^\w+\//, '');
+        }
         rout = rout.replace(/\%FONTURI\%/g, rep);
         styles.push(rout);
       });
@@ -1379,16 +1466,36 @@
       copyFile(_path.join(PATHS.themes, 'wallpapers'),
                _path.join(PATHS.dist, 'themes', 'wallpapers'));
 
-      mkdir(_path.join(PATHS.dist, 'themes', 'icons'));
-      cfg.themes.icons.forEach(function(i) {
-        copyFile(_path.join(PATHS.themes, 'icons', i),
-                 _path.join(PATHS.dist, 'themes', 'icons', i));
-      });
-
       mkdir(_path.join(PATHS.dist, 'themes', 'sounds'));
       cfg.themes.sounds.forEach(function(i) {
         copyFile(_path.join(PATHS.themes, 'sounds', i),
                  _path.join(PATHS.dist, 'themes', 'sounds', i));
+      });
+    }
+
+    function buildIcons() {
+      grunt.log.subhead('Icon packs');
+
+      mkdir(_path.join(PATHS.dist, 'themes', 'icons'));
+
+      cfg.themes.icons.forEach(function(i) {
+        grunt.log.subhead(i + ':');
+
+        var src = _path.join(PATHS.themes, 'icons', i);
+        var dst = _path.join(PATHS.dist, 'themes', 'icons', i);
+        var met = {};
+
+        try {
+          met = JSON.parse(readFile(_path.join(src, 'metadata.json')));
+        } catch ( e ) {}
+
+        if ( met && met.parent ) {
+          console.log('+++', 'Uses parent theme', met.parent);
+          var psrc = _path.join(PATHS.themes, 'icons', met.parent);
+          copyFile(psrc, dst);
+        }
+
+        copyFile(src, dst);
       });
     }
 
@@ -1418,9 +1525,13 @@
     if ( !arg || arg === 'all' ) {
       buildFonts();
       buildStatic();
+      buildIcons();
       buildStyles(null, done);
       return;
+    } else if ( arg === 'icons' ) {
+      buildIcons();
     } else if ( arg === 'resources' ) {
+      buildIcons();
       buildStatic();
     } else if ( arg === 'fonts' ) {
       buildFonts();
@@ -1451,7 +1562,7 @@
             var pcss = false;
             var pjs  = false;
             manifest.preload.forEach(function(p) {
-              if ( p.combine === false ) {
+              if ( p.combine === false || p.src.match(/^(ftp|https?\:)?\/\//) ) {
                 preload.push(p);
                 return;
               }
@@ -1515,6 +1626,9 @@
 
     generate(PATHS.out_client_manifest, 'dist');
     generate(PATHS.out_client_dev_manifest, 'dist-dev');
+
+    var packages = readPackageMetadata(grunt);
+    writeFile(PATHS.out_server_manifest, JSON.stringify(packages, null, 4));
   }
 
   /**
@@ -1576,7 +1690,7 @@
           if ( basename && newname && minified ) {
             writeFile(_path.join(PATHS.out_client_packages, p, newname), minified);
             iter.preload[idx].src = _path.join(p, pl.src.replace(_path.basename(pl.src), newname));
-            writeFile(_path.join(PATHS.out_client_packages, p, 'package.json'), JSON.stringify(iter, null, 2));
+            writeFile(_path.join(PATHS.out_client_packages, p, 'metadata.json'), JSON.stringify(iter, null, 2));
           }
         });
       }
@@ -1601,6 +1715,7 @@
     createLighttpdConfig:     createLighttpdConfig,
     createNginxConfig:        createNginxConfig,
     createPackage:            createPackage,
+    createHandler:            createHandler,
 
     getConfig: generateBuildConfig,
     getConfigPath: getConfigPath,

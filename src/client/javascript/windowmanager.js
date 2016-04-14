@@ -73,6 +73,8 @@
     this.direction  = null;
     this.startX     = mousePosition.x;
     this.startY     = mousePosition.y;
+    this.minWidth   = win._properties.min_width;
+    this.minHeight  = win._properties.min_height;
 
     var windowRects = [];
     _WM.getWindows().forEach(function(w) {
@@ -232,6 +234,15 @@
       var newWidth = null;
       var newHeight = null;
 
+      function clampSizeAllowed() {
+        if ( current.minHeight && newHeight < current.minHeight ) {
+          newHeight = current.minHeight;
+        }
+        if ( current.minWidth && newWidth < current.minWidth ) {
+          newWidth = current.minWidth;
+        }
+      }
+
       var resizeMap = {
         s: function() {
           newWidth = current.rectWindow.w;
@@ -260,6 +271,7 @@
         n: function() {
           newTop = current.rectWindow.y + dy;
           newLeft = current.rectWindow.x;
+
           newHeight = current.rectWindow.h - dy;
           newWidth = current.rectWindow.w;
         },
@@ -285,6 +297,8 @@
         newTop = current.rectWorkspace.top;
         newHeight -= current.rectWorkspace.top - mousePosition.y;
       }
+
+      clampSizeAllowed();
 
       return {left: newLeft, top: newTop, width: newWidth, height: newHeight};
     }
@@ -326,7 +340,7 @@
 
       // Snapping to other windows
       if ( windowSnapSize > 0 ) {
-        current.snapRects.forEach(function(rect) {
+        current.snapRects.every(function(rect) {
           // >
           if ( newRight >= (rect.left - windowSnapSize) && newRight <= (rect.left + windowSnapSize) ) { // Left
             newLeft = rect.left - (current.rectWindow.w + (borderSize * 2));
@@ -500,7 +514,7 @@
    */
   WindowManager.prototype.getWindow = function(name) {
     var result = null;
-    this._windows.forEach(function(w) {
+    this._windows.every(function(w) {
       if ( w && w._name === name ) {
         result = w;
       }
@@ -560,7 +574,7 @@
     console.debug('WindowManager::removeWindow()', w._wid);
 
     var result = false;
-    this._windows.forEach(function(win, i) {
+    this._windows.every(function(win, i) {
       if ( win && win._wid === w._wid ) {
         self._windows[i] = null;
         result = true;
@@ -604,11 +618,12 @@
    * }
    *
    * @param   Object    styles      Style object
+   * @param   String    rawStyles   (Optional) raw CSS data
    *
    * @return  void
    * @method  WindowManager::createStylesheet()
    */
-  WindowManager.prototype.createStylesheet = function(styles) {
+  WindowManager.prototype.createStylesheet = function(styles, rawStyles) {
     this.destroyStylesheet();
 
     var innerHTML = [];
@@ -623,6 +638,9 @@
     });
 
     innerHTML = innerHTML.join('\n');
+    if ( rawStyles ) {
+      innerHTML += '\n' + rawStyles;
+    }
 
     var style       = document.createElement('style');
     style.type      = 'text/css';
