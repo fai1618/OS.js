@@ -50,6 +50,7 @@
     'onSessionLoaded':       [],
     'onLogout':              [],
     'onShutdown':            [],
+    'onApplicationPreload':  [],
     'onApplicationLaunch':   [],
     'onApplicationLaunched': []
   };
@@ -518,27 +519,14 @@
 
     function getPreloads(data) {
       var preload = (data.preload || []).slice(0);
+      var additions = [];
 
       function _add(chk) {
         if ( chk && chk.preload ) {
           chk.preload.forEach(function(p) {
-            preload.unshift(p);
+            additions.push(p);
           });
         }
-      }
-
-      if ( data.scope === 'user' ) {
-        preload = preload.map(function(p) {
-          if ( p.src.substr(0, 1) !== '/' && !p.src.match(/^(https?|ftp)/) ) {
-            OSjs.VFS.url(p.src, function(error, url) {
-              if ( !error ) {
-                p.src = url;
-              }
-            });
-          }
-
-          return p;
-        });
       }
 
       if ( data.depends && data.depends instanceof Array ) {
@@ -558,6 +546,23 @@
           _add(p);
         }
       });
+
+      preload = additions.concat(preload);
+      additions = [];
+
+      if ( data.scope === 'user' ) {
+        preload = preload.map(function(p) {
+          if ( p.src.substr(0, 1) !== '/' && !p.src.match(/^(https?|ftp)/) ) {
+            OSjs.VFS.url(p.src, function(error, url) {
+              if ( !error ) {
+                p.src = url;
+              }
+            });
+          }
+
+          return p;
+        });
+      }
 
       return preload;
     }
@@ -695,22 +700,40 @@
       createLoading(n, {className: 'StartupNotification', tooltip: 'Starting ' + n});
 
       var preload = getPreloads(data);
-      OSjs.Utils.preload(preload, function(total, failed) {
-        destroyLoading(n);
 
-        if ( failed.length ) {
-          _error(OSjs.API._('ERR_APP_PRELOAD_FAILED_FMT', n, failed.join(',')));
-          return;
-        }
+      function _onLaunchPreload() {
 
-        setTimeout(function() {
-          _callback(data);
-        }, 0);
-      }, function(progress, count) {
-        if ( splash ) {
-          splash.update(progress, count);
-        }
-      }, pargs);
+        OSjs.Utils.preload(preload, function(total, failed) {
+          destroyLoading(n);
+
+          if ( failed.length ) {
+            _error(OSjs.API._('ERR_APP_PRELOAD_FAILED_FMT', n, failed.join(',')));
+            return;
+          }
+
+          setTimeout(function() {
+            _callback(data);
+          }, 0);
+        }, function(progress, count) {
+          if ( splash ) {
+            splash.update(progress, count);
+          }
+        }, pargs);
+      }
+
+      OSjs.Utils.asyncs(_hooks.onApplicationPreload, function(qi, i, n) {
+        qi(n, arg, preload, function(p) {
+          if ( p && (p instanceof Array) ) {
+            preload = p;
+          }
+
+          n();
+        });
+      }, function() {
+        _onLaunchPreload();
+      });
+
+      doTriggerHook('onApplicationLaunch', [n, arg]);
 
       return true;
     }
@@ -785,12 +808,13 @@
    * @param   Process   app     Application instance reference
    *                            You can also specify a name by String
    * @param   String    name    Resource Name
+   * @param   boolean   vfspath Return a valid VFS path
    *
    * @return  String            The absolute URL of resource
    *
    * @api     OSjs.API.getApplicationResource()
    */
-  function doGetApplicationResource(app, name) {
+  function doGetApplicationResource(app, name, vfspath) {
     if ( name.match(/^\//) ) {
       return name;
     }
@@ -814,23 +838,37 @@
       return appname;
     }
 
+    function getResultPath(path, userpkg) {
+      path = OSjs.Utils.checkdir(path);
+
+      if ( vfspath ) {
+        if ( userpkg ) {
+          path = path.substr(OSjs.API.getConfig('Connection.FSURI').length);
+        } else {
+          path = 'osjs:///' + path;
+        }
+      }
+
+      return path;
+    }
+
     function getResourcePath() {
       var appname = getName();
       var path = '';
 
+      var root, sub;
       if ( appname ) {
-        var root;
         if ( appname.match(/^(.*)\/(.*)$/) ) {
           root = OSjs.API.getConfig('Connection.PackageURI');
           path = root + '/' + appname + '/' + name;
         } else {
           root = OSjs.API.getConfig('Connection.FSURI');
-          var sub = OSjs.API.getConfig('PackageManager.UserPackages');
+          sub = OSjs.API.getConfig('PackageManager.UserPackages');
           path = root + OSjs.Utils.pathJoin(sub, appname, name);
         }
       }
 
-      return OSjs.Utils.checkdir(path);
+      return getResultPath(path, !!sub);
     }
 
     return getResourcePath();
