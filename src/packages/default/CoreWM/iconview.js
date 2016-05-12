@@ -31,12 +31,73 @@
   'use strict';
 
   /////////////////////////////////////////////////////////////////////////////
+  // SHORTCUT DIALOG
+  /////////////////////////////////////////////////////////////////////////////
+
+  function IconViewShortcutDialog(item, scheme, closeCallback) {
+    Window.apply(this, ['IconViewShortcutDialog', {
+      title: 'Edit Launcher',
+      icon: 'status/appointment-soon.png',
+      width: 400,
+      height: 220,
+      allow_maximize: false,
+      allow_resize: false,
+      allow_minimize: false
+    }]);
+
+    this.scheme = scheme;
+    this.item = Utils.cloneObject(item);
+    this.cb = closeCallback || function() {};
+  }
+
+  IconViewShortcutDialog.prototype = Object.create(Window.prototype);
+  IconViewShortcutDialog.constructor = Window;
+
+  IconViewShortcutDialog.prototype.init = function(wm, app) {
+    var self = this;
+    var root = Window.prototype.init.apply(this, arguments);
+    this.scheme.render(this, this._name);
+
+    this.scheme.find(this, 'InputShortcutLaunch').set('value', this.item.data.launch);
+    this.scheme.find(this, 'InputShortcutLabel').set('value', this.item.data.label);
+    this.scheme.find(this, 'InputTooltipFormatString').set('value', JSON.stringify(this.item.data.args || {}));
+
+    this.scheme.find(this, 'ButtonApply').on('click', function() {
+      self.applySettings();
+      self._close('ok');
+    });
+
+    this.scheme.find(this, 'ButtonCancel').on('click', function() {
+      self._close();
+    });
+
+    return root;
+  };
+
+  IconViewShortcutDialog.prototype.applySettings = function() {
+    this.item.data.launch = this.scheme.find(this, 'InputShortcutLaunch').get('value');
+    this.item.data.label = this.scheme.find(this, 'InputShortcutLabel').get('value');
+    this.item.data.args = JSON.parse(this.scheme.find(this, 'InputTooltipFormatString').get('value') || null);
+  };
+
+  IconViewShortcutDialog.prototype._close = function(button) {
+    this.cb(button, this.item);
+    return Window.prototype._close.apply(this, arguments);
+  };
+
+  IconViewShortcutDialog.prototype._destroy = function() {
+    this.scheme = null;
+    return Window.prototype._destroy.apply(this, arguments);
+  };
+
+  /////////////////////////////////////////////////////////////////////////////
   // ICON VIEW
   /////////////////////////////////////////////////////////////////////////////
 
   function DesktopIconView(wm) {
     var self = this;
 
+    this.dialog = null;
     this.$element = document.createElement('gui-icon-view');
     this.$element.setAttribute('data-multiple', 'false');
     this.$element.setAttribute('no-selection', 'true');
@@ -110,6 +171,11 @@
   DesktopIconView.prototype.destroy = function() {
     Utils.$remove(this.$element);
     this.$element = null;
+
+    if ( this.dialog ) {
+      this.dialog.destroy();
+    }
+    this.dialog = null;
   };
 
   DesktopIconView.prototype.blur = function() {
@@ -154,10 +220,22 @@
       console.warn(e.stack, e);
     }
 
+    console.warn(icons);
+
     var wm = OSjs.Core.getWindowManager();
     wm.applySettings({
       desktopIcons: icons
     }, false, true);
+  };
+
+  DesktopIconView.prototype.updateShortcut = function(data) {
+    var cel = new GUI.ElementDataView(this.$element);
+    var entries = cel.querySelectorAll('gui-icon-view-entry');
+
+    if ( entries[data.index] ) {
+      entries[data.index].setAttribute('data-value', JSON.stringify(data.data));
+      this._save();
+    }
   };
 
   DesktopIconView.prototype.addShortcut = function(data, wm, save) {
@@ -169,15 +247,17 @@
     try {
       if ( data.mime === 'osjs/application' || data.launch ) {
         var appname = data.launch || Utils.filename(data.path);
-        var apps = OSjs.Core.getPackageManager().getPackages();
-        var meta = apps[appname];
+        var meta = OSjs.Core.getPackageManager().getPackage(appname);
+        var lbl = data.label || meta.name;
 
         iter = {
           icon: API.getIcon(meta.icon, '32x32', appname),
           id: appname,
-          label: meta.name,
+          label: lbl,
           value: {
-            launch: appname
+            launch: appname,
+            label: lbl,
+            args: data.args || {}
           }
         };
       } else {
@@ -206,7 +286,8 @@
 
   DesktopIconView.prototype.createContextMenu = function(item, ev) {
     var self = this;
-    API.createMenu([{
+
+    var menu = [{
       title: OSjs.Applications.CoreWM._('Remove shortcut'),
       disabled: item.data.restricted,
       onClick: function() {
@@ -214,7 +295,23 @@
           self.removeShortcut(item);
         }
       }
-    }], ev);
+    }];
+
+    if ( item.data.launch ) {
+      menu.push({
+        title: OSjs.Applications.CoreWM._('Edit shortcut'),
+        disabled: item.data.restricted,
+        onClick: function() {
+          if ( !item.data.restricted ) {
+            self.openShortcutEdit(item);
+          }
+        }
+      });
+    }
+
+    if ( menu.length )  {
+      API.createMenu(menu, ev);
+    }
   };
 
   DesktopIconView.prototype.removeShortcut = function(data, wm) {
@@ -237,7 +334,24 @@
     } catch ( e ) {
       console.warn(e.stack, e);
     }
+  };
 
+  DesktopIconView.prototype.openShortcutEdit = function(item) {
+    if ( this.dialog ) {
+      this.dialog._close();
+    }
+
+    var self = this;
+    var wm = OSjs.Core.getWindowManager();
+
+    this.dialog = new IconViewShortcutDialog(item, wm.scheme, function(button, values) {
+      if ( button === 'ok' ) {
+        self.updateShortcut(values);
+      }
+      self.dialog = null;
+    });
+
+    wm.addWindow(this.dialog, true);
   };
 
   /////////////////////////////////////////////////////////////////////////////

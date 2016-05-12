@@ -112,9 +112,11 @@
 
     try {
       var css = readFile(src).toString();
+      var opt = {sourceMap: {}};
 
-      _less.render(css).then(function(result) {
+      _less.render(css, opt).then(function(result) {
         writeFile(dest, result.css);
+        writeFile(dest + '.map', result.map);
         cb();
       }, function(error) {
         console.warn(error);
@@ -735,7 +737,7 @@
     Object.keys(packages).forEach(function(n) {
       var meta = packages[n];
       if ( meta.autostart === true ) {
-        autostart.push(n.split('/')[1]);
+        autostart.push(meta.className);
       }
     });
 

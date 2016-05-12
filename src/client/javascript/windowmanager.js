@@ -45,6 +45,7 @@
   function BehaviourState(win, action, mousePosition) {
     var self = this;
 
+    this.win      = win;
     this.$element = win._$element;
     this.$top     = win._$top;
     this.$handle  = win._$resize;
@@ -54,7 +55,9 @@
       x: win._position.x,
       y: win._position.y,
       w: win._dimension.w,
-      h: win._dimension.h
+      h: win._dimension.h,
+      r: win._dimension.w + win._position.x,
+      b: win._dimension.h + win._position.y
     };
 
     var theme = _WM.getStyleTheme(true);
@@ -98,6 +101,17 @@
     this.snapRects = windowRects;
   }
 
+  BehaviourState.prototype.getRect = function() {
+    var win = this.win;
+
+    return {
+      left: win._position.x,
+      top: win._position.y,
+      width: win._dimension.w,
+      height: win._dimension.h
+    };
+  };
+
   BehaviourState.prototype.calculateDirection = function() {
     var dir = Utils.$position(this.$handle);
     var dirX = this.startX - dir.left;
@@ -130,6 +144,7 @@
   function createWindowBehaviour(win, wm) {
 
     var current = null;
+    var newRect = {};
 
     /**
      * When mouse button is pressed
@@ -142,6 +157,8 @@
       }
 
       current = new BehaviourState(win, action, mousePosition);
+      newRect = {};
+
       win._focus();
 
       if ( action === 'move' ) {
@@ -149,6 +166,8 @@
       } else {
         current.calculateDirection();
         current.$element.setAttribute('data-hint', 'resizing');
+
+        newRect = current.getRect();
       }
 
       win._fireHook('preop');
@@ -215,7 +234,7 @@
           win._fireHook('move');
         }
         if ( result.width !== null && result.height !== null ) {
-          win._resize(result.width, result.height);
+          win._resize(result.width, result.height, true);
           win._fireHook('resize');
         }
       }
@@ -227,80 +246,54 @@
      * Resizing action
      */
     function onWindowResize(ev, mousePosition, dx, dy) {
-      if ( !current || !current.direction ) { return; }
-
-      var newLeft = null;
-      var newTop = null;
-      var newWidth = null;
-      var newHeight = null;
-
-      function clampSizeAllowed() {
-        if ( current.minHeight && newHeight < current.minHeight ) {
-          newHeight = current.minHeight;
-        }
-        if ( current.minWidth && newWidth < current.minWidth ) {
-          newWidth = current.minWidth;
-        }
+      if ( !current || !current.direction ) {
+        return false;
       }
 
-      var resizeMap = {
-        s: function() {
-          newWidth = current.rectWindow.w;
-          newHeight = current.rectWindow.h + dy;
-        },
-        se: function() {
-          newWidth = current.rectWindow.w + dx;
-          newHeight = current.rectWindow.h + dy;
-        },
-        e: function() {
-          newWidth = current.rectWindow.w + dx;
-          newHeight = current.rectWindow.h;
-        },
-        sw: function() {
-          newWidth = current.rectWindow.w - dx;
-          newHeight = current.rectWindow.h + dy;
-          newLeft = current.rectWindow.x + dx;
-          newTop = current.rectWindow.y;
-        },
-        w: function() {
-          newWidth = current.rectWindow.w - dx;
-          newHeight = current.rectWindow.h;
-          newLeft = current.rectWindow.x + dx;
-          newTop = current.rectWindow.y;
-        },
-        n: function() {
-          newTop = current.rectWindow.y + dy;
-          newLeft = current.rectWindow.x;
+      var nw, nh, nl, nt;
 
-          newHeight = current.rectWindow.h - dy;
-          newWidth = current.rectWindow.w;
-        },
-        nw: function() {
-          newTop = current.rectWindow.y + dy;
-          newLeft = current.rectWindow.x + dx;
-          newHeight = current.rectWindow.h - dy;
-          newWidth = current.rectWindow.w - dx;
-        },
-        ne: function() {
-          newTop = current.rectWindow.y + dy;
-          newLeft = current.rectWindow.x;
-          newHeight = current.rectWindow.h - dy;
-          newWidth = current.rectWindow.w + dx;
+      (function() { // North/South
+        if ( current.direction.indexOf('s') !== -1 ) {
+          nh = current.rectWindow.h + dy;
+
+          newRect.height = Math.max(current.minHeight, nh);
+        } else if ( current.direction.indexOf('n') !== -1 ) {
+          nh = current.rectWindow.h - dy;
+          nt = current.rectWindow.y + dy;
+
+          if ( nt < current.rectWorkspace.top ) {
+            nt = current.rectWorkspace.top;
+            nh = newRect.height; // FIXME: Not 100% precice
+          } else {
+            if ( nh < current.minHeight ) {
+              nt = current.rectWindow.b - current.minHeight;
+            }
+          }
+
+          newRect.height = Math.max(current.minHeight, nh);
+          newRect.top = nt;
         }
-      };
+      })();
 
-      if ( resizeMap[current.direction] ) {
-        resizeMap[current.direction]();
-      }
+      (function() { // East/West
+        if ( current.direction.indexOf('e') !== -1 ) {
+          nw = current.rectWindow.w + dx;
 
-      if ( newTop < current.rectWorkspace.top && newTop !== null ) {
-        newTop = current.rectWorkspace.top;
-        newHeight -= current.rectWorkspace.top - mousePosition.y;
-      }
+          newRect.width = Math.max(current.minWidth, nw);
+        } else if ( current.direction.indexOf('w') !== -1 ) {
+          nw = current.rectWindow.w - dx;
+          nl = current.rectWindow.x + dx;
 
-      clampSizeAllowed();
+          if ( nw < current.minWidth ) {
+            nl = current.rectWindow.r - current.minWidth;
+          }
 
-      return {left: newLeft, top: newTop, width: newWidth, height: newHeight};
+          newRect.width = Math.max(current.minWidth, nw);
+          newRect.left = nl;
+        }
+      })();
+
+      return newRect;
     }
 
     /**
@@ -404,7 +397,7 @@
    * @extends Process
    * @class
    */
-  var WindowManager = function(name, ref, args, metadata, settings) {
+  function WindowManager(name, ref, args, metadata, settings) {
     console.group('WindowManager::constructor()');
     console.log('Name', name);
     console.log('Arguments', args);
@@ -429,7 +422,7 @@
     _WM = (ref || this);
 
     console.groupEnd();
-  };
+  }
 
   WindowManager.prototype = Object.create(Process.prototype);
 
@@ -1049,7 +1042,7 @@
   // EXPORTS
   /////////////////////////////////////////////////////////////////////////////
 
-  OSjs.Core.WindowManager     = WindowManager;
+  OSjs.Core.WindowManager     = Object.seal(WindowManager);
 
   /**
    * Get the current WindowManager instance

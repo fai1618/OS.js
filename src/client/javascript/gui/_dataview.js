@@ -186,6 +186,15 @@
     handleKey();
   }
 
+  function getValueParameter(r) {
+    var value = r.getAttribute('data-value');
+    try {
+      return JSON.parse(value);
+    } catch ( e ) {}
+
+    return value;
+  }
+
   function matchValueByKey(r, val, key, idx) {
     var value = r.getAttribute('data-value');
     if ( !key && (val === idx || val === value) ) {
@@ -301,22 +310,24 @@
       return this;
     },
 
-    remove: function(el, args, className, target) {
+    remove: function(el, args, className, target, parentEl) {
       function remove(cel) {
         Utils.$remove(cel);
       }
+
+      parentEl = parentEl || el;
 
       if ( target ) {
         remove(target);
         return;
       }
       if ( typeof args[1] === 'undefined' && typeof args[0] === 'number' ) {
-        remove(el.querySelectorAll(className)[args[0]]);
+        remove(parentEl.querySelectorAll(className)[args[0]]);
       } else {
         var findId = args[0];
         var findKey = args[1] || 'id';
         var q = 'data-' + findKey + '="' + findId + '"';
-        el.querySelectorAll(className + '[' + q + ']').forEach(remove);
+        parentEl.querySelectorAll(className + '[' + q + ']').forEach(remove);
       }
 
       this.updateActiveSelection(el, className);
@@ -445,15 +456,21 @@
       return selected;
     },
 
-    getEntry: function(el, entries, val, key) {
-      var result = null;
-      entries.forEach(function(r, idx) {
-        if ( matchValueByKey(r, val, key, idx) ) {
-          result = r;
-        }
-        return !!result;
+    getEntry: function(el, entries, val, key, asValue) {
+      if ( val ) {
+        var result = null;
+        entries.forEach(function(r, idx) {
+          if ( !result && matchValueByKey(r, val, key, idx) ) {
+            result = r;
+          }
+        });
+
+        return (asValue && result) ? getValueParameter(result) : result;
+      }
+
+      return !asValue ? entries : (entries || []).map(function(iter) {
+        return getValueParameter(iter);
       });
-      return result;
     },
 
     setSelected: function(el, body, entries, val, key, opts) {

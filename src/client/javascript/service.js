@@ -47,11 +47,12 @@
    * @extends Process
    * @class
    */
-  var Service = function(name, args, metadata) {
+  function Service(name, args, metadata) {
     Process.apply(this, arguments);
-  };
+  }
 
   Service.prototype = Object.create(Process.prototype);
+  Service.constructor = Process;
 
   /**
    * Intiaialize the Service
@@ -67,6 +68,6 @@
   // EXPORTS
   /////////////////////////////////////////////////////////////////////////////
 
-  OSjs.Core.Service           = Service;
+  OSjs.Core.Service = Object.seal(Service);
 
 })(OSjs.Utils, OSjs.API, OSjs.Core.Process);

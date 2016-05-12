@@ -63,6 +63,7 @@
   };
 
   CoreWM.prototype = Object.create(WindowManager.prototype);
+  CoreWM.constructor = WindowManager;
 
   CoreWM.prototype.init = function() {
     var link = (OSjs.Core.getConfig().Connection.RootURI || '/') + 'blank.css';
@@ -1074,7 +1075,7 @@
 
   OSjs.Applications                          = OSjs.Applications || {};
   OSjs.Applications.CoreWM                   = OSjs.Applications.CoreWM || {};
-  OSjs.Applications.CoreWM.Class             = CoreWM;
+  OSjs.Applications.CoreWM.Class             = Object.seal(CoreWM);
   OSjs.Applications.CoreWM.PanelItems        = OSjs.Applications.CoreWM.PanelItems || {};
   OSjs.Applications.CoreWM.CurrentTheme      = OSjs.Applications.CoreWM.CurrentTheme || null;
 
